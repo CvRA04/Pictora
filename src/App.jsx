@@ -1,5 +1,6 @@
 import { useState, useCallback, useRef, useEffect } from 'react'
 import { imageToAscii, exportAsPng, exportAsText, CHAR_SETS } from './asciiConverter'
+import { applyFilters } from './imageFilters'
 import './App.css'
 
 const DEFAULT_PARAMS = {
@@ -14,27 +15,77 @@ const DEFAULT_PARAMS = {
   fgColor: '#00ff41',
 }
 
+const DEFAULT_FILTERS = {
+  blur:          { enabled: false, radius: 3 },
+  sharpen:       { enabled: false, amount: 1.0 },
+  pixelate:      { enabled: false, size: 8 },
+  posterize:     { enabled: false, levels: 4 },
+  threshold:     { enabled: false, value: 128 },
+  grayscale:     { enabled: false },
+  edgeDetect:    { enabled: false },
+  emboss:        { enabled: false },
+  ditherFloyd:   { enabled: false, levels: 2 },
+  ditherOrdered: { enabled: false, levels: 4 },
+  noise:         { enabled: false, amount: 20 },
+  vignette:      { enabled: false, strength: 1.5 },
+}
+
+// ── Small helper components ────────────────────────────────────────────────
+
+function Slider({ label, value, min, max, step, onChange, fmt }) {
+  return (
+    <div className="slider-group">
+      <div className="control-label">
+        {label}
+        <span className="value-badge">{fmt ? fmt(value) : value}</span>
+      </div>
+      <input
+        type="range" className="slider"
+        min={min} max={max} step={step} value={value}
+        onChange={e => onChange(Number(e.target.value))}
+      />
+    </div>
+  )
+}
+
+function FilterCard({ label, enabled, onToggle, children }) {
+  return (
+    <div className={`filter-card ${enabled ? 'active' : ''}`}>
+      <button className="filter-header" onClick={onToggle}>
+        <span className={`filter-dot ${enabled ? 'on' : ''}`} />
+        <span className="filter-name">{label}</span>
+        <span className={`filter-badge ${enabled ? 'on' : ''}`}>{enabled ? 'ON' : 'OFF'}</span>
+      </button>
+      {enabled && children && (
+        <div className="filter-params">{children}</div>
+      )}
+    </div>
+  )
+}
+
+// ── Main app ───────────────────────────────────────────────────────────────
+
 export default function App() {
-  const [imageSrc, setImageSrc] = useState(null)
-  const [imageData, setImageData] = useState(null)
-  const [params, setParams] = useState(DEFAULT_PARAMS)
+  const [tab, setTab]               = useState('image')
+  const [imageSrc, setImageSrc]     = useState(null)
+  const [imageData, setImageData]   = useState(null)
+  const [params, setParams]         = useState(DEFAULT_PARAMS)
+  const [filters, setFilters]       = useState(DEFAULT_FILTERS)
   const [asciiResult, setAsciiResult] = useState(null)
   const [isConverting, setIsConverting] = useState(false)
   const [isDragging, setIsDragging] = useState(false)
-  const fileInputRef = useRef(null)
-  const previewCanvasRef = useRef(null)
-  const convertTimeoutRef = useRef(null)
+  const fileInputRef    = useRef(null)
+  const convertTimeout  = useRef(null)
 
-  // Load image into ImageData
+  // Load image file → ImageData
   const loadImage = useCallback((file) => {
     if (!file || !file.type.startsWith('image/')) return
     const url = URL.createObjectURL(file)
     setImageSrc(url)
-
     const img = new Image()
     img.onload = () => {
       const canvas = document.createElement('canvas')
-      canvas.width = img.naturalWidth
+      canvas.width  = img.naturalWidth
       canvas.height = img.naturalHeight
       const ctx = canvas.getContext('2d')
       ctx.drawImage(img, 0, 0)
@@ -44,59 +95,51 @@ export default function App() {
     img.src = url
   }, [])
 
-  // Convert whenever imageData or params change (debounced)
+  // Re-run pipeline whenever source, params, or filters change
   useEffect(() => {
     if (!imageData) return
-
-    clearTimeout(convertTimeoutRef.current)
-    convertTimeoutRef.current = setTimeout(() => {
+    clearTimeout(convertTimeout.current)
+    convertTimeout.current = setTimeout(() => {
       setIsConverting(true)
-      // Use setTimeout to let the UI update (show spinner) before blocking work
       setTimeout(() => {
-        const result = imageToAscii(imageData, params)
+        const filtered = applyFilters(imageData, filters)
+        const result   = imageToAscii(filtered, params)
         setAsciiResult(result)
         setIsConverting(false)
       }, 10)
-    }, 120)
+    }, 150)
+    return () => clearTimeout(convertTimeout.current)
+  }, [imageData, params, filters])
 
-    return () => clearTimeout(convertTimeoutRef.current)
-  }, [imageData, params])
+  const setParam     = useCallback((k, v) => setParams(p => ({ ...p, [k]: v })), [])
+  const toggleFilter = useCallback((name) =>
+    setFilters(f => ({ ...f, [name]: { ...f[name], enabled: !f[name].enabled } })), [])
+  const setFilterVal = useCallback((name, key, val) =>
+    setFilters(f => ({ ...f, [name]: { ...f[name], [key]: val } })), [])
 
-  const handleParam = useCallback((key, value) => {
-    setParams(prev => ({ ...prev, [key]: value }))
-  }, [])
-
-  const handleFile = useCallback((file) => {
-    loadImage(file)
-  }, [loadImage])
-
+  const handleFile = useCallback((file) => loadImage(file), [loadImage])
   const handleDrop = useCallback((e) => {
-    e.preventDefault()
-    setIsDragging(false)
-    const file = e.dataTransfer.files[0]
-    if (file) handleFile(file)
+    e.preventDefault(); setIsDragging(false)
+    handleFile(e.dataTransfer.files[0])
   }, [handleFile])
 
   const handleExportPng = useCallback(() => {
     if (!asciiResult) return
-    const dataUrl = exportAsPng(asciiResult.lines, asciiResult.colorData, params)
-    const a = document.createElement('a')
-    a.href = dataUrl
-    a.download = 'ascii-art.png'
-    a.click()
+    const url = exportAsPng(asciiResult.lines, asciiResult.colorData, params)
+    Object.assign(document.createElement('a'), { href: url, download: 'ascii-art.png' }).click()
   }, [asciiResult, params])
 
   const handleExportTxt = useCallback(() => {
     if (!asciiResult) return
-    const text = exportAsText(asciiResult.lines)
-    const blob = new Blob([text], { type: 'text/plain' })
-    const url = URL.createObjectURL(blob)
-    const a = document.createElement('a')
-    a.href = url
-    a.download = 'ascii-art.txt'
-    a.click()
+    const blob = new Blob([exportAsText(asciiResult.lines)], { type: 'text/plain' })
+    const url  = URL.createObjectURL(blob)
+    Object.assign(document.createElement('a'), { href: url, download: 'ascii-art.txt' }).click()
     URL.revokeObjectURL(url)
   }, [asciiResult])
+
+  const TABS = ['image', 'filters', 'ascii', 'display', 'export']
+
+  const activeFiltersCount = Object.values(filters).filter(f => f.enabled).length
 
   return (
     <div className="app">
@@ -106,168 +149,206 @@ export default function App() {
       </header>
 
       <div className="workspace">
-        {/* Sidebar controls */}
         <aside className="sidebar">
-          <section className="panel">
-            <h3>Image</h3>
-            <div
-              className={`dropzone ${isDragging ? 'dragging' : ''} ${imageSrc ? 'has-image' : ''}`}
-              onClick={() => fileInputRef.current?.click()}
-              onDragOver={(e) => { e.preventDefault(); setIsDragging(true) }}
-              onDragLeave={() => setIsDragging(false)}
-              onDrop={handleDrop}
-            >
-              {imageSrc
-                ? <img src={imageSrc} alt="source" className="thumb" />
-                : <div className="drop-hint">
-                    <span className="drop-icon">⊕</span>
-                    <span>Drop image or click</span>
-                  </div>
-              }
-            </div>
-            <input
-              ref={fileInputRef}
-              type="file"
-              accept="image/*"
-              style={{ display: 'none' }}
-              onChange={(e) => handleFile(e.target.files[0])}
-            />
-          </section>
-
-          <section className="panel">
-            <h3>Parameters</h3>
-
-            <label className="control-label">
-              Width <span className="value-badge">{params.width} chars</span>
-            </label>
-            <input
-              type="range" min="20" max="300" step="1"
-              value={params.width}
-              onChange={(e) => handleParam('width', Number(e.target.value))}
-              className="slider"
-            />
-
-            <label className="control-label">Character Set</label>
-            <select
-              value={params.charSet}
-              onChange={(e) => handleParam('charSet', e.target.value)}
-              className="select"
-            >
-              {Object.keys(CHAR_SETS).map(k => (
-                <option key={k} value={k}>{k}</option>
-              ))}
-            </select>
-
-            <label className="control-label">
-              Brightness <span className="value-badge">{params.brightness > 0 ? '+' : ''}{params.brightness}</span>
-            </label>
-            <input
-              type="range" min="-100" max="100" step="1"
-              value={params.brightness}
-              onChange={(e) => handleParam('brightness', Number(e.target.value))}
-              className="slider"
-            />
-
-            <label className="control-label">
-              Contrast <span className="value-badge">{params.contrast > 0 ? '+' : ''}{params.contrast}</span>
-            </label>
-            <input
-              type="range" min="-100" max="100" step="1"
-              value={params.contrast}
-              onChange={(e) => handleParam('contrast', Number(e.target.value))}
-              className="slider"
-            />
-
-            <div className="toggle-row">
-              <label className="toggle-label">Invert</label>
+          <nav className="tab-nav">
+            {TABS.map(t => (
               <button
-                className={`toggle ${params.invert ? 'on' : 'off'}`}
-                onClick={() => handleParam('invert', !params.invert)}
+                key={t}
+                className={`tab-btn ${tab === t ? 'active' : ''}`}
+                onClick={() => setTab(t)}
               >
-                {params.invert ? 'ON' : 'OFF'}
+                {t}
+                {t === 'filters' && activeFiltersCount > 0 && (
+                  <span className="tab-badge">{activeFiltersCount}</span>
+                )}
               </button>
-            </div>
+            ))}
+          </nav>
 
-            <div className="toggle-row">
-              <label className="toggle-label">Color Mode</label>
-              <button
-                className={`toggle ${params.colorMode ? 'on' : 'off'}`}
-                onClick={() => handleParam('colorMode', !params.colorMode)}
-              >
-                {params.colorMode ? 'ON' : 'OFF'}
-              </button>
-            </div>
-          </section>
+          <div className="tab-content">
 
-          <section className="panel">
-            <h3>Display</h3>
+            {/* ── IMAGE ── */}
+            {tab === 'image' && (
+              <div className="panel">
+                <div
+                  className={`dropzone ${isDragging ? 'dragging' : ''} ${imageSrc ? 'has-image' : ''}`}
+                  onClick={() => fileInputRef.current?.click()}
+                  onDragOver={e => { e.preventDefault(); setIsDragging(true) }}
+                  onDragLeave={() => setIsDragging(false)}
+                  onDrop={handleDrop}
+                >
+                  {imageSrc
+                    ? <img src={imageSrc} alt="source" className="thumb" />
+                    : <div className="drop-hint">
+                        <span className="drop-icon">⊕</span>
+                        <span>Drop image or click to upload</span>
+                      </div>
+                  }
+                </div>
+                {imageSrc && (
+                  <button className="btn-reset" onClick={() => { setImageSrc(null); setImageData(null); setAsciiResult(null) }}>
+                    Remove image
+                  </button>
+                )}
+                <input ref={fileInputRef} type="file" accept="image/*"
+                  style={{ display: 'none' }} onChange={e => handleFile(e.target.files[0])} />
+              </div>
+            )}
 
-            <label className="control-label">
-              Font Size <span className="value-badge">{params.fontSize}px</span>
-            </label>
-            <input
-              type="range" min="4" max="24" step="1"
-              value={params.fontSize}
-              onChange={(e) => handleParam('fontSize', Number(e.target.value))}
-              className="slider"
-            />
+            {/* ── FILTERS ── */}
+            {tab === 'filters' && (
+              <div className="filters-list">
+                <FilterCard label="Blur" enabled={filters.blur.enabled} onToggle={() => toggleFilter('blur')}>
+                  <Slider label="Radius" value={filters.blur.radius} min={1} max={20} step={1}
+                    onChange={v => setFilterVal('blur', 'radius', v)} />
+                </FilterCard>
 
-            <label className="control-label">Background</label>
-            <div className="color-row">
-              <input
-                type="color" value={params.bgColor}
-                onChange={(e) => handleParam('bgColor', e.target.value)}
-                className="color-pick"
-              />
-              <span className="color-hex">{params.bgColor}</span>
-            </div>
+                <FilterCard label="Sharpen" enabled={filters.sharpen.enabled} onToggle={() => toggleFilter('sharpen')}>
+                  <Slider label="Amount" value={filters.sharpen.amount} min={0.1} max={3} step={0.1}
+                    onChange={v => setFilterVal('sharpen', 'amount', v)} fmt={v => v.toFixed(1)} />
+                </FilterCard>
 
-            <label className="control-label">Foreground</label>
-            <div className="color-row">
-              <input
-                type="color" value={params.fgColor}
-                onChange={(e) => handleParam('fgColor', e.target.value)}
-                className="color-pick"
-              />
-              <span className="color-hex">{params.fgColor}</span>
-            </div>
+                <FilterCard label="Pixelate" enabled={filters.pixelate.enabled} onToggle={() => toggleFilter('pixelate')}>
+                  <Slider label="Block size" value={filters.pixelate.size} min={2} max={64} step={1}
+                    onChange={v => setFilterVal('pixelate', 'size', v)} />
+                </FilterCard>
 
-            <button
-              className="btn-reset"
-              onClick={() => setParams(DEFAULT_PARAMS)}
-            >
-              Reset to defaults
-            </button>
-          </section>
+                <FilterCard label="Posterize" enabled={filters.posterize.enabled} onToggle={() => toggleFilter('posterize')}>
+                  <Slider label="Levels" value={filters.posterize.levels} min={2} max={8} step={1}
+                    onChange={v => setFilterVal('posterize', 'levels', v)} />
+                </FilterCard>
 
-          <section className="panel">
-            <h3>Export</h3>
-            <div className="export-buttons">
-              <button
-                className="btn-export"
-                onClick={handleExportPng}
-                disabled={!asciiResult}
-              >
-                Export PNG
-              </button>
-              <button
-                className="btn-export"
-                onClick={handleExportTxt}
-                disabled={!asciiResult}
-              >
-                Export TXT
-              </button>
-            </div>
-          </section>
+                <FilterCard label="Threshold" enabled={filters.threshold.enabled} onToggle={() => toggleFilter('threshold')}>
+                  <Slider label="Value" value={filters.threshold.value} min={0} max={255} step={1}
+                    onChange={v => setFilterVal('threshold', 'value', v)} />
+                </FilterCard>
+
+                <FilterCard label="Grayscale" enabled={filters.grayscale.enabled} onToggle={() => toggleFilter('grayscale')} />
+
+                <FilterCard label="Edge Detect (Sobel)" enabled={filters.edgeDetect.enabled} onToggle={() => toggleFilter('edgeDetect')} />
+
+                <FilterCard label="Emboss" enabled={filters.emboss.enabled} onToggle={() => toggleFilter('emboss')} />
+
+                <FilterCard label="Dither — Floyd-Steinberg" enabled={filters.ditherFloyd.enabled} onToggle={() => toggleFilter('ditherFloyd')}>
+                  <Slider label="Levels" value={filters.ditherFloyd.levels} min={2} max={8} step={1}
+                    onChange={v => setFilterVal('ditherFloyd', 'levels', v)} />
+                </FilterCard>
+
+                <FilterCard label="Dither — Ordered (Bayer 8×8)" enabled={filters.ditherOrdered.enabled} onToggle={() => toggleFilter('ditherOrdered')}>
+                  <Slider label="Levels" value={filters.ditherOrdered.levels} min={2} max={8} step={1}
+                    onChange={v => setFilterVal('ditherOrdered', 'levels', v)} />
+                </FilterCard>
+
+                <FilterCard label="Noise" enabled={filters.noise.enabled} onToggle={() => toggleFilter('noise')}>
+                  <Slider label="Amount" value={filters.noise.amount} min={1} max={80} step={1}
+                    onChange={v => setFilterVal('noise', 'amount', v)} />
+                </FilterCard>
+
+                <FilterCard label="Vignette" enabled={filters.vignette.enabled} onToggle={() => toggleFilter('vignette')}>
+                  <Slider label="Strength" value={filters.vignette.strength} min={0} max={3} step={0.1}
+                    onChange={v => setFilterVal('vignette', 'strength', v)} fmt={v => v.toFixed(1)} />
+                </FilterCard>
+
+                {activeFiltersCount > 0 && (
+                  <button className="btn-reset" onClick={() => setFilters(DEFAULT_FILTERS)}>
+                    Clear all filters
+                  </button>
+                )}
+              </div>
+            )}
+
+            {/* ── ASCII ── */}
+            {tab === 'ascii' && (
+              <div className="panel">
+                <Slider label="Width" value={params.width} min={20} max={300} step={1}
+                  onChange={v => setParam('width', v)} fmt={v => `${v} chars`} />
+
+                <div className="control-label" style={{ marginTop: 4 }}>Character Set</div>
+                <select className="select" value={params.charSet}
+                  onChange={e => setParam('charSet', e.target.value)}>
+                  {Object.keys(CHAR_SETS).map(k => <option key={k} value={k}>{k}</option>)}
+                </select>
+
+                <Slider label="Brightness" value={params.brightness} min={-100} max={100} step={1}
+                  onChange={v => setParam('brightness', v)}
+                  fmt={v => (v > 0 ? `+${v}` : `${v}`)} />
+
+                <Slider label="Contrast" value={params.contrast} min={-100} max={100} step={1}
+                  onChange={v => setParam('contrast', v)}
+                  fmt={v => (v > 0 ? `+${v}` : `${v}`)} />
+
+                <div className="toggle-row">
+                  <span className="toggle-label">Invert</span>
+                  <button className={`toggle ${params.invert ? 'on' : 'off'}`}
+                    onClick={() => setParam('invert', !params.invert)}>
+                    {params.invert ? 'ON' : 'OFF'}
+                  </button>
+                </div>
+
+                <div className="toggle-row">
+                  <span className="toggle-label">Color Mode</span>
+                  <button className={`toggle ${params.colorMode ? 'on' : 'off'}`}
+                    onClick={() => setParam('colorMode', !params.colorMode)}>
+                    {params.colorMode ? 'ON' : 'OFF'}
+                  </button>
+                </div>
+
+                <button className="btn-reset" style={{ marginTop: 8 }}
+                  onClick={() => setParams(DEFAULT_PARAMS)}>
+                  Reset to defaults
+                </button>
+              </div>
+            )}
+
+            {/* ── DISPLAY ── */}
+            {tab === 'display' && (
+              <div className="panel">
+                <Slider label="Font Size" value={params.fontSize} min={4} max={24} step={1}
+                  onChange={v => setParam('fontSize', v)} fmt={v => `${v}px`} />
+
+                <div className="control-label" style={{ marginTop: 4 }}>Background</div>
+                <div className="color-row">
+                  <input type="color" className="color-pick" value={params.bgColor}
+                    onChange={e => setParam('bgColor', e.target.value)} />
+                  <span className="color-hex">{params.bgColor}</span>
+                </div>
+
+                <div className="control-label">Foreground</div>
+                <div className="color-row">
+                  <input type="color" className="color-pick" value={params.fgColor}
+                    onChange={e => setParam('fgColor', e.target.value)} />
+                  <span className="color-hex">{params.fgColor}</span>
+                </div>
+              </div>
+            )}
+
+            {/* ── EXPORT ── */}
+            {tab === 'export' && (
+              <div className="panel">
+                <p className="export-hint">
+                  {asciiResult
+                    ? `${asciiResult.lines[0]?.length ?? 0} × ${asciiResult.lines.length} chars`
+                    : 'No image loaded yet'}
+                </p>
+                <div className="export-buttons">
+                  <button className="btn-export" onClick={handleExportPng} disabled={!asciiResult}>
+                    Export PNG
+                  </button>
+                  <button className="btn-export" onClick={handleExportTxt} disabled={!asciiResult}>
+                    Export TXT
+                  </button>
+                </div>
+              </div>
+            )}
+
+          </div>
         </aside>
 
-        {/* Main canvas area */}
+        {/* ── Canvas area ── */}
         <main className="canvas-area">
           {!imageData && (
             <div className="empty-state">
-              <div className="empty-art">
-                {`    ____  _      _                  \n   |  _ \\(_) ___| |_ ___  _ __ __ _ \n   | |_) | |/ __| __/ _ \\| '__/ _\` |\n   |  __/| | (__| || (_) | | | (_| |\n   |_|   |_|\\___|\\__\\___/|_|  \\__,_|\n`}
-              </div>
+              <div className="empty-art">{`    ____  _      _                  \n   |  _ \\(_) ___| |_ ___  _ __ __ _ \n   | |_) | |/ __| __/ _ \\| '__/ _\` |\n   |  __/| | (__| || (_) | | | (_| |\n   |_|   |_|\\___|\\__\\___/|_|  \\__,_|\n`}</div>
               <p>Upload an image to begin</p>
             </div>
           )}
@@ -284,7 +365,7 @@ export default function App() {
                 style={{
                   fontSize: `${params.fontSize}px`,
                   lineHeight: `${params.fontSize * 1.2}px`,
-                  backgroundColor: params.colorMode ? params.bgColor : params.bgColor,
+                  backgroundColor: params.bgColor,
                   color: params.colorMode ? 'inherit' : params.fgColor,
                 }}
               >
@@ -292,15 +373,11 @@ export default function App() {
                   <div key={i} className="ascii-line">
                     {params.colorMode
                       ? asciiResult.colorData[i]?.map((cell, j) => (
-                          <span
-                            key={j}
-                            style={{ color: `rgb(${cell.r},${cell.g},${cell.b})` }}
-                          >
+                          <span key={j} style={{ color: `rgb(${cell.r},${cell.g},${cell.b})` }}>
                             {cell.char}
                           </span>
                         ))
-                      : line
-                    }
+                      : line}
                   </div>
                 ))}
               </pre>
