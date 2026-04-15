@@ -1,0 +1,40 @@
+{
+  "expo": {
+    "name": "Pictora",
+    "slug": "pictora",
+    "version": "1.0.0",
+    "orientation": "portrait",
+    "icon": "./assets/icon.png",
+    "userInterfaceStyle": "dark",
+    "splash": {
+      "resizeMode": "contain",
+      "backgroundColor": "#0d0d0d"
+    },
+    "ios": {
+      "supportsTablet": true,
+      "bundleIdentifier": "com.pictora.app",
+      "infoPlist": {
+        "NSPhotoLibraryUsageDescription": "Pictora needs access to your photo library to convert images to ASCII art.",
+        "NSPhotoLibraryAddUsageDescription": "Pictora saves ASCII art images to your photo library."
+      }
+    },
+    "android": {
+      "adaptiveIcon": {
+        "backgroundColor": "#0d0d0d"
+      },
+      "package": "com.pictora.app",
+      "permissions": [
+        "READ_EXTERNAL_STORAGE",
+        "WRITE_EXTERNAL_STORAGE"
+      ]
+    },
+    "plugins": [
+      [
+        "expo-image-picker",
+        {
+          "photosPermission": "Pictora needs access to your photo library to convert images to ASCII art."
+        }
+      ]
+    ]
+  }
+}
